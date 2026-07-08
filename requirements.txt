@@ -1,0 +1,112 @@
+"""
+fetch_data.py
+=============
+Pulls live credit spread and macro data from the FRED API using YOUR OWN
+free API key.
+
+Why you need your own key (and why this project doesn't ship real data):
+FRED's ICE BofA credit spread series are licensed from ICE Data Indices and
+are copyrighted -- the series page explicitly prohibits redistributing the
+data to third parties. So this project ships only a small, clearly-labeled
+SYNTHETIC dataset (data/credit_spreads_illustrative.csv) for you to build
+and test the dashboard against. Once you have a key, running this script
+pulls the real, current series for your own personal analysis, which is
+exactly what the FRED terms of use allow.
+
+Get a free key (instant, no approval wait):
+    https://fredaccount.stlouisfed.org/apikeys
+
+Then:
+    export FRED_API_KEY=your_key_here
+    python fetch_data.py
+
+Series pulled (all free via the FRED API):
+    BAMLH0A0HYM2   - ICE BofA US High Yield Index OAS      (junk bond spread)
+    BAMLC0A4CBBB   - ICE BofA BBB US Corporate Index OAS   (lowest IG rating)
+    DGS10          - 10-Year Treasury Constant Maturity Rate
+    VIXCLS         - CBOE Volatility Index (VIX)
+
+Note: FRED now caps ICE BofA series at a rolling 3-year window (a policy
+change as of April 2026) -- that's still plenty of data to see a full
+rate-hiking cycle and at least one spread-widening episode.
+"""
+
+import csv
+import os
+import sys
+import urllib.request
+import urllib.parse
+import json
+
+FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
+
+SERIES = {
+    "hy_oas_pct": "BAMLH0A0HYM2",
+    "bbb_oas_pct": "BAMLC0A4CBBB",
+    "ust10y_pct": "DGS10",
+    "vix": "VIXCLS",
+}
+
+OUT_PATH = os.path.join("data", "credit_spreads_live.csv")
+
+
+def fetch_series(series_id: str, api_key: str) -> dict:
+    """Returns {date: value} for one FRED series, skipping missing ('.') observations."""
+    params = {
+        "series_id": series_id,
+        "api_key": api_key,
+        "file_type": "json",
+    }
+    url = f"{FRED_BASE}?{urllib.parse.urlencode(params)}"
+    with urllib.request.urlopen(url, timeout=20) as resp:
+        payload = json.load(resp)
+
+    out = {}
+    for obs in payload.get("observations", []):
+        if obs["value"] != ".":
+            out[obs["date"]] = float(obs["value"])
+    return out
+
+
+def main():
+    api_key = os.environ.get("FRED_API_KEY")
+    if not api_key:
+        print("No FRED_API_KEY environment variable found.")
+        print("Get a free key at https://fredaccount.stlouisfed.org/apikeys")
+        print("Then run: export FRED_API_KEY=your_key_here")
+        print("\nFalling back to the bundled illustrative sample data --")
+        print("dashboard.py will use data/credit_spreads_illustrative.csv instead.")
+        sys.exit(0)
+
+    print("Fetching live series from FRED...")
+    all_series = {}
+    for col_name, series_id in SERIES.items():
+        print(f"  {series_id} -> {col_name}")
+        all_series[col_name] = fetch_series(series_id, api_key)
+
+    # Align on dates present in the 10Y treasury series (most complete, daily)
+    all_dates = sorted(all_series["ust10y_pct"].keys())
+
+    os.makedirs("data", exist_ok=True)
+    with open(OUT_PATH, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["date"] + list(SERIES.keys()))
+        for d in all_dates:
+            row = [d]
+            skip = False
+            for col in SERIES.keys():
+                val = all_series[col].get(d)
+                if val is None:
+                    skip = True
+                    break
+                row.append(val)
+            if not skip:
+                writer.writerow(row)
+
+    print(f"\nSaved live data to {OUT_PATH}")
+    print("Reminder: this data is licensed from ICE Data Indices via FRED -- "
+          "for your own analysis/personal use, not for redistribution.")
+
+
+if __name__ == "__main__":
+    main()
